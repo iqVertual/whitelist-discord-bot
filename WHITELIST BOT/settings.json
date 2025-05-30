@@ -1,6 +1,17 @@
 {
   "guildSettings": {
-    "GUILD_ID": { "logChannelId": "CHANNEL_ID", "whitelistEnabled": true }
+    "GUILD_ID": {
+      "logChannelId": "CHANNEL_ID",
+      "whitelistEnabled": true
+    },
+    "1179246845109743657": {
+      "logChannelId": "1378152683122462802",
+      "whitelistEnabled": false
+    },
+    "1371211281339781140": {
+      "logChannelId": null,
+      "whitelistEnabled": true
+    }
   },
-  "globalLogChannelId": "CHANNEL_ID"
+  "globalLogChannelId": "1378152704999686255"
 }

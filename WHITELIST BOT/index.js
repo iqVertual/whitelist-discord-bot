@@ -12,8 +12,8 @@ const SETTINGS_FILE = 'settings.json';
 
 let guilds = {};
 let exemptFromHierarchy = [];
-let guildSettings = {}; 
-let globalLogChannelId = null; 
+let guildSettings = {};
+let globalLogChannelId = null;
 
 function loadGuilds() {
     try {
@@ -88,6 +88,7 @@ function getGuildData(guildId) {
 function getGuildSettings(guildId) {
     if (!guildSettings[guildId]) {
         guildSettings[guildId] = { logChannelId: null, whitelistEnabled: false };
+        saveSettings();
     }
     return guildSettings[guildId];
 }
@@ -134,6 +135,7 @@ function logAction(guildId, action, description, authorTag = null) {
     const embed = new EmbedBuilder()
         .setTitle('Command Log')
         .addFields(
+            { name: 'Guild ID', value: guildId, inline: true },
             { name: 'Action', value: action, inline: true },
             { name: 'Description', value: description, inline: true }
         )
@@ -144,7 +146,6 @@ function logAction(guildId, action, description, authorTag = null) {
         embed.addFields({ name: 'Executed by', value: authorTag, inline: true });
     }
 
- 
     if (logChannelId) {
         const logChannel = client.channels.cache.get(logChannelId);
         if (logChannel) {
@@ -159,6 +160,11 @@ function logAction(guildId, action, description, authorTag = null) {
         }
     }
 }
+
+client.on('guildCreate', guild => {
+    getGuildSettings(guild.id);
+    saveSettings();
+});
 
 client.on('messageCreate', async message => {
     console.log(`Received message from ${message.author.id}: ${message.content}`);
@@ -180,7 +186,6 @@ client.on('messageCreate', async message => {
 
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const command = args.shift().toLowerCase();
-
 
     if (command === 'globalnoti') {
         if (message.author.id !== OWNER_ID) {
@@ -519,6 +524,7 @@ client.on('guildMemberAdd', async member => {
         const embed = new EmbedBuilder()
             .setTitle('User Kick Log')
             .addFields(
+                { name: 'Guild ID', value: member.guild.id, inline: true },
                 { name: 'Action', value: 'kick', inline: true },
                 { name: 'Description', value: `Permanently blacklisted: <@${member.id}>`, inline: true },
                 { name: 'User ID', value: member.id, inline: true }
@@ -545,6 +551,7 @@ client.on('guildMemberAdd', async member => {
         const embed = new EmbedBuilder()
             .setTitle('User Kick Log')
             .addFields(
+                { name: 'Guild ID', value: member.guild.id, inline: true },
                 { name: 'Action', value: 'kick', inline: true },
                 { name: 'Description', value: `Attempted to join but not whitelisted: <@${member.id}> (Attempt ${attempts})`, inline: true },
                 { name: 'User ID', value: member.id, inline: true }
