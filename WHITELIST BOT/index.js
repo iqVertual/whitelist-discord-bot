@@ -4,13 +4,16 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 
 const prefix = "$";
 
-const OWNER_ID = 'YOUR_USER_ID_HERE'; // <-- Replace with your Discord user ID
+const OWNER_ID = 'YOUR DISCORD ID';
 
 const GUILDS_FILE = 'guilds.json';
 const EXEMPT_FILE = 'exempt.json';
+const SETTINGS_FILE = 'settings.json';
 
 let guilds = {};
 let exemptFromHierarchy = [];
+let guildSettings = {}; 
+let globalLogChannelId = null; 
 
 function loadGuilds() {
     try {
@@ -51,8 +54,29 @@ function saveExempt() {
     fs.writeFileSync(EXEMPT_FILE, JSON.stringify(exemptFromHierarchy, null, 2));
 }
 
+function loadSettings() {
+    try {
+        const data = fs.readFileSync(SETTINGS_FILE, 'utf8');
+        const parsed = JSON.parse(data);
+        guildSettings = parsed.guildSettings || {};
+        globalLogChannelId = parsed.globalLogChannelId || null;
+    } catch (err) {
+        guildSettings = {};
+        globalLogChannelId = null;
+    }
+}
+
+function saveSettings() {
+    const settings = {
+        guildSettings,
+        globalLogChannelId
+    };
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+}
+
 loadGuilds();
 loadExempt();
+loadSettings();
 
 function getGuildData(guildId) {
     if (!guilds[guildId]) {
@@ -61,34 +85,15 @@ function getGuildData(guildId) {
     return guilds[guildId];
 }
 
-const permanentBlacklist = new Set();
-let whitelistEnabled = false;
-let logChannelId = null;
-const joinAttempts = new Map();
-
-const SETTINGS_FILE = 'settings.json';
-
-function loadSettings() {
-    try {
-        const data = fs.readFileSync(SETTINGS_FILE, 'utf8');
-        const settings = JSON.parse(data);
-        logChannelId = settings.logChannelId ?? null;
-        whitelistEnabled = settings.whitelistEnabled ?? false;
-    } catch (err) {
-        logChannelId = null;
-        whitelistEnabled = false;
+function getGuildSettings(guildId) {
+    if (!guildSettings[guildId]) {
+        guildSettings[guildId] = { logChannelId: null, whitelistEnabled: false };
     }
+    return guildSettings[guildId];
 }
 
-function saveSettings() {
-    const settings = {
-        logChannelId,
-        whitelistEnabled
-    };
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-}
-
-loadSettings();
+const permanentBlacklist = new Set();
+const joinAttempts = new Map();
 
 try {
     const data = fs.readFileSync('permanent_blacklist.json', 'utf8');
@@ -123,7 +128,40 @@ client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
 });
 
+function logAction(guildId, action, description, authorTag = null) {
+    const settings = getGuildSettings(guildId);
+    const logChannelId = settings.logChannelId;
+    const embed = new EmbedBuilder()
+        .setTitle('Command Log')
+        .addFields(
+            { name: 'Action', value: action, inline: true },
+            { name: 'Description', value: description, inline: true }
+        )
+        .setTimestamp()
+        .setColor(0x000000);
+
+    if (authorTag) {
+        embed.addFields({ name: 'Executed by', value: authorTag, inline: true });
+    }
+
+ 
+    if (logChannelId) {
+        const logChannel = client.channels.cache.get(logChannelId);
+        if (logChannel) {
+            logChannel.send({ embeds: [embed] });
+        }
+    }
+
+    if (globalLogChannelId) {
+        const globalLogChannel = client.channels.cache.get(globalLogChannelId);
+        if (globalLogChannel) {
+            globalLogChannel.send({ embeds: [embed] });
+        }
+    }
+}
+
 client.on('messageCreate', async message => {
+    console.log(`Received message from ${message.author.id}: ${message.content}`);
     if (!message.content.startsWith(prefix) && hellenkelleredUsers.has(message.author.id) && !message.author.bot) {
         message.reply("Stupid little wetard, just use your voice");
         return;
@@ -134,6 +172,7 @@ client.on('messageCreate', async message => {
     const guildId = message.guild?.id;
     if (!guildId) return;
     const guildData = getGuildData(guildId);
+    const settings = getGuildSettings(guildId);
 
     if (!guildData.managers.has(message.author.id) && !exemptFromHierarchy.includes(message.author.id)) {
         return;
@@ -142,26 +181,22 @@ client.on('messageCreate', async message => {
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const command = args.shift().toLowerCase();
 
-    const logAction = (action, description) => {
-        if (logChannelId) {
-            const logChannel = client.channels.cache.get(logChannelId);
-            if (logChannel) {
-                const embed = new EmbedBuilder()
-                    .setTitle('Command Log')
-                    .addFields(
-                        { name: 'Action', value: action, inline: true },
-                        { name: 'Description', value: description, inline: true },
-                        { name: 'Executed by', value: message.author.tag, inline: true }
-                    )
-                    .setTimestamp()
-                    .setColor(0x000000);
 
-                logChannel.send({ embeds: [embed] });
-            }
+    if (command === 'globalnoti') {
+        if (message.author.id !== OWNER_ID) {
+            message.channel.send('You do not have permission to use this command.');
+            return;
         }
-    };
+        if (args.length === 0) {
+            message.channel.send('Please provide a channel ID.');
+            return;
+        }
+        globalLogChannelId = args[0];
+        saveSettings();
+        message.channel.send(`Global log channel set to <#${globalLogChannelId}>.`);
+        return;
+    }
 
-    // Only OWNER_ID can add/remove exempt users
     if (command === 'addexempt') {
         if (message.author.id !== OWNER_ID) {
             message.channel.send('You do not have permission to use this command.');
@@ -176,7 +211,7 @@ client.on('messageCreate', async message => {
             exemptFromHierarchy.push(userId);
             saveExempt();
             message.channel.send(`<@${userId}> has been added as globally exempt.`);
-            logAction('addexempt', `Added <@${userId}> as globally exempt`);
+            logAction(guildId, 'addexempt', `Added <@${userId}> as globally exempt`, message.author.tag);
         } else {
             message.channel.send(`<@${userId}> is already globally exempt.`);
         }
@@ -195,7 +230,7 @@ client.on('messageCreate', async message => {
             exemptFromHierarchy = exemptFromHierarchy.filter(id => id !== userId);
             saveExempt();
             message.channel.send(`<@${userId}> has been removed from global exempt.`);
-            logAction('delexempt', `Removed <@${userId}> from global exempt`);
+            logAction(guildId, 'delexempt', `Removed <@${userId}> from global exempt`, message.author.tag);
         } else {
             message.channel.send(`<@${userId}> is not globally exempt.`);
         }
@@ -216,7 +251,7 @@ client.on('messageCreate', async message => {
             guildData.managers.add(userId);
             saveGuilds();
             message.channel.send(`<@${userId}> has been added as a manager for this server.`);
-            logAction('addmanager', `Added <@${userId}> as manager`);
+            logAction(guildId, 'addmanager', `Added <@${userId}> as manager`, message.author.tag);
         } else {
             message.channel.send(`<@${userId}> is already a manager for this server.`);
         }
@@ -235,10 +270,30 @@ client.on('messageCreate', async message => {
             guildData.managers.delete(userId);
             saveGuilds();
             message.channel.send(`<@${userId}> has been removed as a manager for this server.`);
-            logAction('delmanager', `Removed <@${userId}> as manager`);
+            logAction(guildId, 'delmanager', `Removed <@${userId}> as manager`, message.author.tag);
         } else {
             message.channel.send(`<@${userId}> is not a manager for this server.`);
         }
+        return;
+    }
+
+    if (command === 'setlogchannel') {
+        if (args.length === 0) {
+            message.channel.send('Please provide a channel ID to set as the log channel.');
+            return;
+        }
+        settings.logChannelId = args[0];
+        saveSettings();
+        message.channel.send(`Log channel set to <#${settings.logChannelId}> for this server.`);
+        logAction(guildId, 'setlogchannel', `Set log channel to <#${settings.logChannelId}>`, message.author.tag);
+        return;
+    }
+
+    if (command === 'togglewhitelist') {
+        settings.whitelistEnabled = !settings.whitelistEnabled;
+        saveSettings();
+        message.channel.send(`Whitelist feature has been ${settings.whitelistEnabled ? 'enabled' : 'disabled'} for this server.`);
+        logAction(guildId, 'togglewhitelist', `Whitelist feature has been ${settings.whitelistEnabled ? 'enabled' : 'disabled'}`, message.author.tag);
         return;
     }
 
@@ -251,20 +306,24 @@ client.on('messageCreate', async message => {
                 { name: '`whitelist <id>`', value: 'Add a user to the whitelist (per server).', inline: true },
                 { name: '`removeuser <id>`', value: 'Remove a user from the whitelist and kick them from the server.', inline: true },
                 { name: '`ban <id>`', value: 'Ban a user and remove from the whitelist.', inline: true },
-                { name: '`togglewhitelist`', value: 'Enable or disable the whitelist feature.', inline: true },
-                { name: '`setlogchannel <channelId>`', value: 'Set the channel where bot actions will be logged.', inline: true },
+                { name: '`togglewhitelist`', value: 'Enable or disable the whitelist feature (per server).', inline: true },
+                { name: '`setlogchannel <channelId>`', value: 'Set the channel where bot actions will be logged (per server).', inline: true },
                 { name: '`whitelistall`', value: 'Whitelist everyone in the server.', inline: true },
                 { name: '`addmanager <id>`', value: 'Add a user as a manager for this server (exempt only).', inline: true },
                 { name: '`delmanager <id>`', value: 'Remove a user as a manager for this server (exempt only).', inline: true },
                 { name: '`addexempt <id>`', value: 'Add a user as globally exempt (owner only).', inline: true },
-                { name: '`delexempt <id>`', value: 'Remove a user from globally exempt (owner only).', inline: true }
+                { name: '`delexempt <id>`', value: 'Remove a user from globally exempt (owner only).', inline: true },
+                { name: '`globalnoti <channelId>`', value: 'Set a channel to receive all logs for every guild (owner only).', inline: true }
             )
             .setFooter({ text: 'Developed by <@398155693846167562>' })
             .setColor(0x000000);
 
         message.channel.send({ embeds: [embed] });
-        logAction('help', 'Displayed help commands');
-    } else if (command === 'whitelist') {
+        logAction(guildId, 'help', 'Displayed help commands', message.author.tag);
+        return;
+    }
+
+    if (command === 'whitelist') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator) && !guildData.managers.has(message.author.id) && !exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
             return;
@@ -281,7 +340,8 @@ client.on('messageCreate', async message => {
         guildData.whitelist.add(userId);
         saveGuilds();
         message.channel.send(`<@${userId}> has been added to the whitelist for this server.`);
-        logAction('whitelist', `Added <@${userId}> to the whitelist`);
+        logAction(guildId, 'whitelist', `Added <@${userId}> to the whitelist`, message.author.tag);
+        return;
     } else if (command === 'removeuser') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator) && !guildData.managers.has(message.author.id) && !exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -311,7 +371,8 @@ client.on('messageCreate', async message => {
         } else {
             message.channel.send('User not found.');
         }
-        logAction('removeuser', `Removed <@${userId}> from the whitelist and kicked from the server`);
+        logAction(guildId, 'removeuser', `Removed <@${userId}> from the whitelist and kicked from the server`, message.author.tag);
+        return;
     } else if (command === 'ban') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator) && !guildData.managers.has(message.author.id) && !exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -341,21 +402,8 @@ client.on('messageCreate', async message => {
         }
         guildData.whitelist.delete(userId);
         saveGuilds();
-        logAction('ban', `Banned <@${userId}> and removed from the whitelist`);
-    } else if (command === 'togglewhitelist') {
-        whitelistEnabled = !whitelistEnabled;
-        saveSettings();
-        message.channel.send(`Whitelist feature has been ${whitelistEnabled ? 'enabled' : 'disabled'}.`);
-        logAction('togglewhitelist', `Whitelist feature has been ${whitelistEnabled ? 'enabled' : 'disabled'}`);
-    } else if (command === 'setlogchannel') {
-        if (args.length === 0) {
-            message.channel.send('Please provide a channel ID to set as the log channel.');
-            return;
-        }
-        logChannelId = args[0];
-        saveSettings();
-        message.channel.send(`Log channel set to <#${logChannelId}>.`);
-        logAction('setlogchannel', `Set log channel to <#${logChannelId}>`);
+        logAction(guildId, 'ban', `Banned <@${userId}> and removed from the whitelist`, message.author.tag);
+        return;
     } else if (command === 'whitelistall') {
         if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator) && !guildData.managers.has(message.author.id) && !exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -369,8 +417,9 @@ client.on('messageCreate', async message => {
             });
             saveGuilds();
             message.channel.send('All server members (except permanently blacklisted) have been added to the whitelist.');
-            logAction('whitelistall', 'Added all server members to the whitelist');
+            logAction(guildId, 'whitelistall', 'Added all server members to the whitelist', message.author.tag);
         });
+        return;
     } else if (command === 'pblacklist') {
         if (!exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -390,7 +439,8 @@ client.on('messageCreate', async message => {
         savePermanentBlacklist();
         saveGuilds();
         message.channel.send(`<@${userId}> has been permanently blacklisted. Reason: ${reason}`);
-        logAction('pblacklist', `Permanently blacklisted <@${userId}>. Reason: ${reason}`);
+        logAction(guildId, 'pblacklist', `Permanently blacklisted <@${userId}>. Reason: ${reason}`, message.author.tag);
+        return;
     } else if (command === 'unpblacklist') {
         if (!exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -406,10 +456,11 @@ client.on('messageCreate', async message => {
             permanentBlacklist.delete(userId);
             savePermanentBlacklist();
             message.channel.send(`<@${userId}> has been removed from the permanent blacklist. Reason: ${reason}`);
-            logAction('unpblacklist', `Removed <@${userId}> from permanent blacklist. Reason: ${reason}`);
+            logAction(guildId, 'unpblacklist', `Removed <@${userId}> from permanent blacklist. Reason: ${reason}`, message.author.tag);
         } else {
             message.channel.send(`<@${userId}> is not on the permanent blacklist.`);
         }
+        return;
     } else if (command === 'hellenkeller') {
         if (!exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -431,7 +482,8 @@ client.on('messageCreate', async message => {
         } catch (err) {}
         hellenkelleredUsers.add(userId);
         message.channel.send(`<@${userId}> stupid little wetard, just learn to speak`);
-        logAction('hellenkeller', `hellenkellered <@${userId}>`);
+        logAction(guildId, 'hellenkeller', `hellenkellered <@${userId}>`, message.author.tag);
+        return;
     } else if (command === 'unhellenkeller') {
         if (!exemptFromHierarchy.includes(message.author.id)) {
             message.channel.send('You do not have permission to use this command.');
@@ -451,7 +503,8 @@ client.on('messageCreate', async message => {
         }
         hellenkelleredUsers.delete(userId);
         message.channel.send(`<@${userId}> has been unhellenkellered.`);
-        logAction('unhellenkeller', `Unhellenkellered <@${userId}>`);
+        logAction(guildId, 'unhellenkeller', `Unhellenkellered <@${userId}>`, message.author.tag);
+        return;
     }
 });
 
@@ -462,39 +515,49 @@ client.on('guildMemberAdd', async member => {
 
     if (permanentBlacklist.has(member.id)) {
         await member.kick('Permanently blacklisted');
-        const logChannel = client.channels.cache.get(logChannelId);
-        if (logChannel) {
-            const embed = new EmbedBuilder()
-                .setTitle('User Kick Log')
-                .addFields(
-                    { name: 'Action', value: 'kick', inline: true },
-                    { name: 'Description', value: `Permanently blacklisted: <@${member.id}>`, inline: true },
-                    { name: 'User ID', value: member.id, inline: true }
-                )
-                .setTimestamp()
-                .setColor(0x000000);
-            logChannel.send({ embeds: [embed] });
+        const settings = getGuildSettings(member.guild.id);
+        const embed = new EmbedBuilder()
+            .setTitle('User Kick Log')
+            .addFields(
+                { name: 'Action', value: 'kick', inline: true },
+                { name: 'Description', value: `Permanently blacklisted: <@${member.id}>`, inline: true },
+                { name: 'User ID', value: member.id, inline: true }
+            )
+            .setTimestamp()
+            .setColor(0x000000);
+        if (settings.logChannelId) {
+            const logChannel = client.channels.cache.get(settings.logChannelId);
+            if (logChannel) logChannel.send({ embeds: [embed] });
+        }
+        if (globalLogChannelId) {
+            const globalLogChannel = client.channels.cache.get(globalLogChannelId);
+            if (globalLogChannel) globalLogChannel.send({ embeds: [embed] });
         }
         return;
     }
 
     const guildId = member.guild.id;
     const guildData = getGuildData(guildId);
+    const settings = getGuildSettings(guildId);
 
-    if (whitelistEnabled && !guildData.whitelist.has(member.id)) {
+    if (settings.whitelistEnabled && !guildData.whitelist.has(member.id)) {
         await member.kick('Not whitelisted');
-        const logChannel = client.channels.cache.get(logChannelId);
-        if (logChannel) {
-            const embed = new EmbedBuilder()
-                .setTitle('User Kick Log')
-                .addFields(
-                    { name: 'Action', value: 'kick', inline: true },
-                    { name: 'Description', value: `Attempted to join but not whitelisted: <@${member.id}> (Attempt ${attempts})`, inline: true },
-                    { name: 'User ID', value: member.id, inline: true }
-                )
-                .setTimestamp()
-                .setColor(0x000000);
-            logChannel.send({ embeds: [embed] });
+        const embed = new EmbedBuilder()
+            .setTitle('User Kick Log')
+            .addFields(
+                { name: 'Action', value: 'kick', inline: true },
+                { name: 'Description', value: `Attempted to join but not whitelisted: <@${member.id}> (Attempt ${attempts})`, inline: true },
+                { name: 'User ID', value: member.id, inline: true }
+            )
+            .setTimestamp()
+            .setColor(0x000000);
+        if (settings.logChannelId) {
+            const logChannel = client.channels.cache.get(settings.logChannelId);
+            if (logChannel) logChannel.send({ embeds: [embed] });
+        }
+        if (globalLogChannelId) {
+            const globalLogChannel = client.channels.cache.get(globalLogChannelId);
+            if (globalLogChannel) globalLogChannel.send({ embeds: [embed] });
         }
 
         if (attempts >= 2) {
@@ -503,16 +566,18 @@ client.on('guildMemberAdd', async member => {
                 for (const invite of invites.values()) {
                     await invite.delete('Wiped due to repeated join attempts by non-whitelisted user');
                 }
-                if (logChannelId) {
-                    const logChannel = client.channels.cache.get(logChannelId);
-                    if (logChannel) {
-                        const embed = new EmbedBuilder()
-                            .setTitle('Invites Wiped')
-                            .setDescription(`All invites wiped after <@${member.id}> attempted to join twice without being whitelisted.`)
-                            .setTimestamp()
-                            .setColor(0xff0000);
-                        logChannel.send({ embeds: [embed] });
-                    }
+                const wipeEmbed = new EmbedBuilder()
+                    .setTitle('Invites Wiped')
+                    .setDescription(`All invites wiped after <@${member.id}> attempted to join twice without being whitelisted.`)
+                    .setTimestamp()
+                    .setColor(0xff0000);
+                if (settings.logChannelId) {
+                    const logChannel = client.channels.cache.get(settings.logChannelId);
+                    if (logChannel) logChannel.send({ embeds: [wipeEmbed] });
+                }
+                if (globalLogChannelId) {
+                    const globalLogChannel = client.channels.cache.get(globalLogChannelId);
+                    if (globalLogChannel) globalLogChannel.send({ embeds: [wipeEmbed] });
                 }
             } catch (err) {
                 console.error('Failed to wipe invites:', err);
